@@ -1,13 +1,14 @@
 package commands
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/sanntintdev/gator/internal/config"
+	"github.com/sanntintdev/gator/internal/database"
 )
 
 type State struct {
+	Db  *database.Queries
 	Cfg *config.Config
 }
 
@@ -16,19 +17,6 @@ type Command struct {
 	Args []string
 }
 
-func handlerLogin(s *State, cmd Command) error {
-	if len(cmd.Args) == 0 {
-		return errors.New("Login command requires an username")
-	}
-
-	username := cmd.Args[0]
-	err := s.Cfg.SetUser(username)
-	if err != nil {
-		return fmt.Errorf("failed to set user: %w", err)
-	}
-	fmt.Printf("User successfully set to: %s\n", username)
-	return nil
-}
 
 type Commands struct {
 	handler map[string]func(*State, Command) error
@@ -53,5 +41,5 @@ func (c *Commands) register(name string, handler func(*State, Command) error) {
 }
 
 func (c *Commands) RegisterDefaultCommands() {
-	c.register("login", handlerLogin)
+	RegisterUserCommands(c)
 }
