@@ -17,7 +17,6 @@ type Command struct {
 	Args []string
 }
 
-
 type Commands struct {
 	handler map[string]func(*State, Command) error
 }
@@ -42,4 +41,5 @@ func (c *Commands) register(name string, handler func(*State, Command) error) {
 
 func (c *Commands) RegisterDefaultCommands() {
 	RegisterUserCommands(c)
+	RegisterFeedCommands(c)
 }

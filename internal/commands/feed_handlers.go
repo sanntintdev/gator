@@ -1,0 +1,168 @@
+package commands
+
+import (
+	"context"
+	"encoding/xml"
+	"fmt"
+	"html"
+	"io"
+	"net/http"
+	"time"
+
+	"github.com/sanntintdev/gator/internal/database"
+)
+
+type RSSFeed struct {
+	Channel struct {
+		Title       string    `xml:"title"`
+		Link        string    `xml:"link"`
+		Description string    `xml:"description"`
+		Item        []RSSItem `xml:"item"`
+	} `xml:"channel"`
+}
+
+type RSSItem struct {
+	Title       string `xml:"title"`
+	Link        string `xml:"link"`
+	Description string `xml:"description"`
+	PubDate     string `xml:"pubDate"`
+}
+
+func FetchFeed(ctx context.Context, url string) (*RSSFeed, error) {
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "gator")
+
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+	res, err := client.Do(req)
+
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status code: %d", res.StatusCode)
+	}
+
+	data, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	var feed RSSFeed
+	err = xml.Unmarshal(data, &feed)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse XML: %w", err)
+	}
+
+	feed.Channel.Title = html.UnescapeString(feed.Channel.Title)
+	feed.Channel.Description = html.UnescapeString(feed.Channel.Description)
+
+	for i := range feed.Channel.Item {
+		feed.Channel.Item[i].Title = html.UnescapeString(feed.Channel.Item[i].Title)
+		feed.Channel.Item[i].Description = html.UnescapeString(feed.Channel.Item[i].Description)
+	}
+
+	return &feed, nil
+}
+
+func handlerAgg(s *State, cmd Command) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	feedUrl := "https://www.wagslane.dev/index.xml"
+	feed, err := FetchFeed(ctx, feedUrl)
+	if err != nil {
+		return fmt.Errorf("Failed to fetch feed from %s: %w", feedUrl, err)
+	}
+
+	fmt.Printf("Successfully fetched feed: %s\n", feed.Channel.Title)
+	fmt.Printf("Description: %s\n", feed.Channel.Description)
+	fmt.Printf("Number of items: %d\n\n", len(feed.Channel.Item))
+
+	fmt.Println("=== FEED DETAILS ===")
+	fmt.Printf("Title: %s\n", feed.Channel.Title)
+	fmt.Printf("Link: %s\n", feed.Channel.Link)
+	fmt.Printf("Description: %s\n", feed.Channel.Description)
+
+	fmt.Println("\n=== RECENT ITEMS ===")
+	for i, item := range feed.Channel.Item {
+		fmt.Printf("\nItem %d:\n", i+1)
+		fmt.Printf("  Title: %s\n", item.Title)
+		fmt.Printf("  Link: %s\n", item.Link)
+		fmt.Printf("  PubDate: %s\n", item.PubDate)
+		fmt.Printf("  Description: %s...\n", item.Description)
+	}
+
+	return nil
+}
+
+func handlerCreateFeed(s *State, cmd Command) error {
+	username := s.Cfg.CurrentUserName
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if len(cmd.Args) != 2 {
+		return fmt.Errorf("Invalid number of arguments")
+	}
+
+	name := cmd.Args[0]
+	feedUrl := cmd.Args[1]
+
+	currentUser, err := s.Db.GetUser(ctx, username)
+	if err != nil {
+		return fmt.Errorf("Failed to get user %s: %w", username, err)
+	}
+
+	now := time.Now()
+	createFeedParams := database.CreateFeedParams{
+		Name:      name,
+		Url:       feedUrl,
+		UserID:    currentUser.ID,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	_, err = s.Db.CreateFeed(ctx, createFeedParams)
+	if err != nil {
+		return fmt.Errorf("Failed to create feed: %w", err)
+	}
+
+	fmt.Printf("Feed created successfully.")
+	return nil
+}
+
+func handlerRetrieveFeeds(s *State, cmd Command) error {
+	ctx := context.Background()
+	feeds, err := s.Db.RetrieveFeedsWithUser(ctx)
+
+	if err != nil {
+		return fmt.Errorf("Failed to retrieve feeds: %w", err)
+	}
+
+	fmt.Println("=== FEEDS ===")
+	for _, feed := range feeds {
+		fmt.Printf("  Name: %s\n", feed.Name)
+		fmt.Printf("  URL: %s\n", feed.Url)
+		fmt.Printf(" Created by: %s\n", feed.Name_2.String)
+	}
+
+	return nil
+}
+
+func RegisterFeedCommands(c *Commands) {
+	feedHandlers := map[string]func(*State, Command) error{
+		"agg":     handlerAgg,
+		"addfeed": handlerCreateFeed,
+		"feeds":   handlerRetrieveFeeds,
+	}
+
+	for name, handler := range feedHandlers {
+		c.register(name, handler)
+	}
+}
