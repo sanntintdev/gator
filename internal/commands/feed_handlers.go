@@ -2,13 +2,18 @@ package commands
 
 import (
 	"context"
+	"database/sql"
 	"encoding/xml"
 	"fmt"
 	"html"
 	"io"
+	"log"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/lib/pq"
 	"github.com/sanntintdev/gator/internal/database"
 )
 
@@ -93,6 +98,10 @@ func ScrapeFeeds(s *State) error {
 	fmt.Printf("Found %d posts:\n\n", len(rssFeed.Channel.Item))
 
 	for i, item := range rssFeed.Channel.Item {
+		err := savePost(s, ctx, item, feed.ID)
+		if err != nil {
+			log.Printf("Error saving post %s: %v", item.Title, err)
+		}
 		fmt.Printf("%d. %s\n", i+1, item.Title)
 		fmt.Printf("   Link: %s\n", item.Link)
 		if item.PubDate != "" {
@@ -102,6 +111,72 @@ func ScrapeFeeds(s *State) error {
 	}
 
 	return nil
+}
+
+func savePost(s *State, ctx context.Context, rssItem RSSItem, feedId int32) error {
+	publishedAt, err := parsePublishedDate(rssItem.PubDate)
+	if err != nil {
+		log.Printf("Warning: couldn't parse date '%s' for post '%s': %v",
+			rssItem.PubDate, rssItem.Title, err)
+		publishedAt = nil
+	}
+
+	var sqlPublishedAt sql.NullTime
+	if publishedAt != nil {
+		sqlPublishedAt = sql.NullTime{
+			Time:  *publishedAt,
+			Valid: true,
+		}
+	}
+	_, err = s.Db.CreatePost(ctx, database.CreatePostParams{
+		Title:       rssItem.Title,
+		Url:         rssItem.Link,
+		Description: rssItem.Description,
+		PublishedAt: sqlPublishedAt,
+		FeedID:      feedId,
+	})
+
+	if err != nil {
+		if isDuplicateURLError(err) {
+			return nil
+		}
+		return fmt.Errorf("database insertion failed: %w", err)
+	}
+
+	fmt.Printf("✓ Saved: %s\n", rssItem.Title)
+	return nil
+
+}
+
+func isDuplicateURLError(err error) bool {
+	if pqErr, ok := err.(*pq.Error); ok {
+		return pqErr.Code == "23505"
+	}
+	return strings.Contains(err.Error(), "UNIQUE constraint failed") ||
+		strings.Contains(err.Error(), "duplicate key")
+}
+
+func parsePublishedDate(dateStr string) (*time.Time, error) {
+	if dateStr == "" {
+		return nil, nil
+	}
+
+	// Common RSS/Atom date formats to try
+	formats := []string{
+		time.RFC1123Z, // "Mon, 02 Jan 2006 15:04:05 -0700"
+		time.RFC1123,  // "Mon, 02 Jan 2006 15:04:05 MST"
+		time.RFC3339,  // "2006-01-02T15:04:05Z07:00"
+		time.RFC822Z,  // "02 Jan 06 15:04 -0700"
+		time.RFC822,   // "02 Jan 06 15:04 MST"
+	}
+
+	for _, format := range formats {
+		if t, err := time.Parse(format, dateStr); err == nil {
+			return &t, nil
+		}
+	}
+
+	return nil, fmt.Errorf("couldn't parse date format: %s", dateStr)
 }
 
 func handlerAgg(s *State, cmd Command) error {
@@ -249,10 +324,38 @@ func handlerUnfollowFeed(s *State, cmd Command, user database.User) error {
 	return nil
 }
 
+func handlerBrowse(s *State, cmd Command) error {
+	if len(cmd.Args) != 1 {
+		return fmt.Errorf("Invalid number of arguments")
+	}
+
+	limit, err := strconv.ParseInt(cmd.Args[0], 10, 32)
+
+	if err != nil {
+		return fmt.Errorf("Invalid limit: %w", err)
+	}
+
+	ctx := context.Background()
+	posts, err := s.Db.RetrievePostsForUser(ctx, int32(limit))
+
+	if err != nil {
+		return fmt.Errorf("Invalid feed URL: %w", err)
+	}
+
+	for _, post := range posts {
+		fmt.Printf("%s\n", post.Title)
+		fmt.Printf("%s\n", post.Description)
+		fmt.Printf("%s\n", post.PublishedAt.Time)
+	}
+
+	return nil
+}
+
 func RegisterFeedCommands(c *Commands) {
 	publicHandlers := map[string]func(*State, Command) error{
-		"agg":   handlerAgg,
-		"feeds": handlerRetrieveFeeds,
+		"agg":    handlerAgg,
+		"feeds":  handlerRetrieveFeeds,
+		"browse": handlerBrowse,
 	}
 
 	authHandlers := map[string]func(*State, Command, database.User) error{
