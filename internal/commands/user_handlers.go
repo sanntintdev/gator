@@ -93,6 +93,21 @@ func handlerGetUsers(s *State, c Command) error {
 	return nil
 }
 
+func handlerFollowing(s *State, cmd Command, user database.User) error {
+
+	ctx := context.Background()
+
+	following, err := s.Db.RetrieveFeedFollowsForUser(ctx, user.ID)
+	if err != nil {
+		return fmt.Errorf("failed to get following: %w", err)
+	}
+
+	for _, following := range following {
+		fmt.Println("*", following.FeedName)
+	}
+	return nil
+}
+
 func RegisterUserCommands(c *Commands) {
 	userHandlers := map[string]func(*State, Command) error{
 		"login":    handlerLogin,
@@ -104,4 +119,6 @@ func RegisterUserCommands(c *Commands) {
 	for name, handler := range userHandlers {
 		c.register(name, handler)
 	}
+
+	c.register("following", MiddlewareLoggedIn(handlerFollowing))
 }

@@ -102,8 +102,7 @@ func handlerAgg(s *State, cmd Command) error {
 	return nil
 }
 
-func handlerCreateFeed(s *State, cmd Command) error {
-	username := s.Cfg.CurrentUserName
+func handlerCreateFeed(s *State, cmd Command, user database.User) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -114,23 +113,29 @@ func handlerCreateFeed(s *State, cmd Command) error {
 	name := cmd.Args[0]
 	feedUrl := cmd.Args[1]
 
-	currentUser, err := s.Db.GetUser(ctx, username)
-	if err != nil {
-		return fmt.Errorf("Failed to get user %s: %w", username, err)
-	}
-
 	now := time.Now()
 	createFeedParams := database.CreateFeedParams{
 		Name:      name,
 		Url:       feedUrl,
-		UserID:    currentUser.ID,
+		UserID:    user.ID,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
 
-	_, err = s.Db.CreateFeed(ctx, createFeedParams)
+	createdFeed, err := s.Db.CreateFeed(ctx, createFeedParams)
 	if err != nil {
 		return fmt.Errorf("Failed to create feed: %w", err)
+	}
+
+	// Created follow feed records
+	followFeedParams := database.CreateFeedFollowParams{
+		UserID: user.ID,
+		FeedID: createdFeed.ID,
+	}
+
+	_, err = s.Db.CreateFeedFollow(ctx, followFeedParams)
+	if err != nil {
+		return fmt.Errorf("Failed to create follow feed record: %w", err)
 	}
 
 	fmt.Printf("Feed created successfully.")
@@ -155,14 +160,80 @@ func handlerRetrieveFeeds(s *State, cmd Command) error {
 	return nil
 }
 
-func RegisterFeedCommands(c *Commands) {
-	feedHandlers := map[string]func(*State, Command) error{
-		"agg":     handlerAgg,
-		"addfeed": handlerCreateFeed,
-		"feeds":   handlerRetrieveFeeds,
+func handlerFollowFeed(s *State, cmd Command, user database.User) error {
+	if len(cmd.Args) != 1 {
+		return fmt.Errorf("Invalid number of arguments")
 	}
 
-	for name, handler := range feedHandlers {
+	feedURL := cmd.Args[0]
+	ctx := context.Background()
+	feed, err := s.Db.RetrieveFeedWithURL(ctx, feedURL)
+
+	if err != nil {
+		return fmt.Errorf("Invalid feed URL: %w", err)
+	}
+
+	followFeedParams := database.CreateFeedFollowParams{
+		UserID: user.ID,
+		FeedID: feed.ID,
+	}
+
+	feedFollow, err := s.Db.CreateFeedFollow(ctx, followFeedParams)
+	if err != nil {
+		return fmt.Errorf("Failed to follow feed: %w", err)
+	}
+
+	fmt.Printf("Feed %s followed successfully.\n", feedFollow.FeedName)
+	fmt.Printf("Followed by %s.\n", feedFollow.UserName)
+
+	return nil
+}
+
+func handlerUnfollowFeed(s *State, cmd Command, user database.User) error {
+	if len(cmd.Args) != 1 {
+		return fmt.Errorf("Invalid number of arguments")
+	}
+
+	feedURL := cmd.Args[0]
+	ctx := context.Background()
+	feed, err := s.Db.RetrieveFeedWithURL(ctx, feedURL)
+
+	if err != nil {
+		return fmt.Errorf("Invalid feed URL: %w", err)
+	}
+
+	unfollowFeedParams := database.DeleteFeedFollowParams{
+		UserID: user.ID,
+		FeedID: feed.ID,
+	}
+
+	err = s.Db.DeleteFeedFollow(ctx, unfollowFeedParams)
+	if err != nil {
+		return fmt.Errorf("Failed to unfollow feed: %w", err)
+	}
+
+	fmt.Printf("Feed %s unfollowed successfully.\n", feed.Name)
+
+	return nil
+}
+
+func RegisterFeedCommands(c *Commands) {
+	publicHandlers := map[string]func(*State, Command) error{
+		"agg":   handlerAgg,
+		"feeds": handlerRetrieveFeeds,
+	}
+
+	authHandlers := map[string]func(*State, Command, database.User) error{
+		"addfeed":  handlerCreateFeed,
+		"follow":   handlerFollowFeed,
+		"unfollow": handlerUnfollowFeed,
+	}
+
+	for name, handler := range publicHandlers {
 		c.register(name, handler)
+	}
+
+	for name, handler := range authHandlers {
+		c.register(name, MiddlewareLoggedIn(handler))
 	}
 }

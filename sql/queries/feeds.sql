@@ -12,3 +12,7 @@ RETURNING *;
 -- name: RetrieveFeedsWithUser :many
 SELECT * FROM feeds
 LEFT JOIN users ON feeds.user_id = users.id;
+
+-- name: RetrieveFeedWithURL :one
+SELECT * FROM feeds
+WHERE  url = $1;
