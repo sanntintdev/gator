@@ -71,35 +71,67 @@ func FetchFeed(ctx context.Context, url string) (*RSSFeed, error) {
 	return &feed, nil
 }
 
-func handlerAgg(s *State, cmd Command) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	feedUrl := "https://www.wagslane.dev/index.xml"
-	feed, err := FetchFeed(ctx, feedUrl)
+func ScrapeFeeds(s *State) error {
+	ctx := context.Background()
+	feed, err := s.Db.RetrieveNextFeedToFetch(ctx)
 	if err != nil {
-		return fmt.Errorf("Failed to fetch feed from %s: %w", feedUrl, err)
+		return fmt.Errorf("couldn't get next feed: %w", err)
 	}
 
-	fmt.Printf("Successfully fetched feed: %s\n", feed.Channel.Title)
-	fmt.Printf("Description: %s\n", feed.Channel.Description)
-	fmt.Printf("Number of items: %d\n\n", len(feed.Channel.Item))
+	err = s.Db.MarkFeedFetched(ctx, feed.ID)
+	if err != nil {
+		return fmt.Errorf("couldn't mark feed as fetched: %w", err)
+	}
 
-	fmt.Println("=== FEED DETAILS ===")
-	fmt.Printf("Title: %s\n", feed.Channel.Title)
-	fmt.Printf("Link: %s\n", feed.Channel.Link)
-	fmt.Printf("Description: %s\n", feed.Channel.Description)
+	fmt.Printf("Fetching feed: %s from %s\n", feed.Name, feed.Url)
+	rssFeed, err := FetchFeed(ctx, feed.Url)
+	if err != nil {
+		return fmt.Errorf("failed to fetch feed: %w", err)
+	}
 
-	fmt.Println("\n=== RECENT ITEMS ===")
-	for i, item := range feed.Channel.Item {
-		fmt.Printf("\nItem %d:\n", i+1)
-		fmt.Printf("  Title: %s\n", item.Title)
-		fmt.Printf("  Link: %s\n", item.Link)
-		fmt.Printf("  PubDate: %s\n", item.PubDate)
-		fmt.Printf("  Description: %s...\n", item.Description)
+	fmt.Printf("\n=== %s ===\n", rssFeed.Channel.Title)
+	fmt.Printf("Found %d posts:\n\n", len(rssFeed.Channel.Item))
+
+	for i, item := range rssFeed.Channel.Item {
+		fmt.Printf("%d. %s\n", i+1, item.Title)
+		fmt.Printf("   Link: %s\n", item.Link)
+		if item.PubDate != "" {
+			fmt.Printf("   Published: %s\n", item.PubDate)
+		}
+		fmt.Println()
 	}
 
 	return nil
+}
+
+func handlerAgg(s *State, cmd Command) error {
+	if len(cmd.Args) != 1 {
+		return fmt.Errorf("Invalid number of arguments")
+	}
+
+	timeBetweenRequest, err := time.ParseDuration(cmd.Args[0])
+	if err != nil {
+		return fmt.Errorf("Invalid time format: %w", err)
+	}
+
+	if timeBetweenRequest < 1*time.Second {
+		return fmt.Errorf("time between requests must be at least 1s")
+	}
+
+	fmt.Printf("Collecting feeds every %s\n", timeBetweenRequest)
+	fmt.Println("Press Ctrl+C to stop")
+
+	tiker := time.NewTicker(timeBetweenRequest)
+	defer tiker.Stop()
+
+	for ; ; <-tiker.C {
+		fmt.Println("Fetching feeds...")
+		err := ScrapeFeeds(s)
+		if err != nil {
+			fmt.Printf("Error fetching feeds: %v\n", err)
+		}
+	}
+
 }
 
 func handlerCreateFeed(s *State, cmd Command, user database.User) error {
